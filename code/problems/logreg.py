@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import torchvision.datasets as dsets
@@ -31,19 +32,78 @@ class Logistic(_ProblemBase):
         output_dim = 10
         self.model = LogisticRegressionModel(self.input_dim, output_dim)
 
-        per_worker = int(math.ceil(len(train_dataset) / float(config.n_peers)))
-        if per_worker < config.n_samples:
-            print("n_samples set to ", per_worker)
-            self.per_worker = per_worker
-        else:
-            self.per_worker = config.n_samples
+#         per_worker = int(math.ceil(len(train_dataset) / float(config.n_peers)))
+#         if per_worker < config.n_samples:
+#             # print("n_samples set to ", per_worker)
+#             self.per_worker = per_worker
+#         else:
+#             self.per_worker = config.n_samples
 
+#         beg = rank * per_worker
+#         end = min(beg + per_worker, len(train_dataset)-1)
+#         train_dataset.targets = train_dataset.targets[beg:end]
+#         train_dataset.data = train_dataset.data[beg:end]
+
+#         train_dataset.targets = train_dataset.targets.clone()
+#         mask = train_dataset.targets == rank % output_dim
+
+#         ratio = config.h_ratio
+#         # cond = int(mask.sum()/len(mask) > ratio)
+#         # n_switch = round((1-2*cond)*(len(mask)*ratio - int(mask.sum())))
+#         # idx = torch.where(mask == cond)[0]
+#         # idx_switch = np.random.choice(idx, size=n_switch, replace=False)
+#         # mask[idx_switch] = not cond
+#         n_switch = round(ratio*(len(mask) - int(mask.sum())))
+#         idx = torch.where(mask == False)[0]
+#         idx_switch = np.random.choice(idx, size=n_switch, replace=False)
+#         mask[idx_switch] = True
+
+#         train_dataset.targets = train_dataset.targets[mask]
+#         train_dataset.data = train_dataset.data[mask]
+#         print('rank %i: n_samples %i' % (rank, len(train_dataset.targets)))
+
+        # mask = train_dataset.targets == rank % output_dim 
+    
+        mask = train_dataset.targets != 0
+        indices = torch.nonzero(mask).squeeze()
+        per_worker = int(math.ceil(len(indices) / float(config.n_peers)))
+            
         beg = rank * per_worker
-        end = min(beg + per_worker, len(train_dataset)-1)
-        train_dataset.targets = train_dataset.targets[beg:end]
-        train_dataset.data = train_dataset.data[beg:end]
+        end = min(beg + per_worker, len(indices)-1)
+        indices = indices[beg:end]
+        
+        
+        if rank % output_dim == 0:
+            mask = train_dataset.targets == 0 
+            g_indices = torch.nonzero(mask).squeeze()
+            n_g = int(config.n_peers / output_dim + config.n_peers % output_dim)
+            print(n_g)
+            
+            per_worker = int(math.ceil(len(g_indices) / float(n_g)))
+            for i in range(n_g):
+                if i == int(rank / output_dim):
+                    beg = i * per_worker
+                    end = min(beg + per_worker, len(g_indices)-1)
+                    g_indices = g_indices[beg:end]
+                    print('skdjf', len(g_indices))
+                    ratio = config.h_ratio
+                    n = math.ceil(config.n_samples*(1-ratio))
+                    indices[:n] = g_indices[:n]
+        
+        
+        indices = indices[:config.n_samples]
+        if len(indices) < config.n_samples:
+            print("n_samples set to ", len(indices))
 
-        self.dataset = train_dataset
+        mask = torch.zeros_like(mask).scatter_(0, indices, 1)
+        train_dataset.targets = train_dataset.targets[mask]
+        train_dataset.data = train_dataset.data[mask]
+        print('rank %i: n_samples %i' % (rank, len(train_dataset.targets)))
+
+            
+        
+        
+        
         self.train_loader = DataLoader(dataset=train_dataset,
                                        batch_size=config.batch_size,
                                        shuffle=True)
@@ -88,7 +148,7 @@ class Logistic(_ProblemBase):
     def metrics(self) -> float:
         self.sample(full=True)
         self.metrics_dict["loss"] = self.loss().item()
-        print(self.metrics_dict["loss"])
+        # print(self.metrics_dict["loss"])
         return self.metrics_dict
 
 

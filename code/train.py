@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import random
+import numpy as np
 from collections import namedtuple
 # import mlflow
 from mlflow import MlflowClient
@@ -31,7 +32,7 @@ def _train(rank: int, port: str, config):
 
     verbose = os.environ['MLFLOW_VERBOSE']
     if verbose and rank == 0:
-        tracking_uri = '/home/nazya/mlruns'
+        tracking_uri = os.path.expanduser('~/mlruns/')
         experiment_name = os.environ['MLFLOW_EXPERIMENT_NAME']
         client = MlflowClient(tracking_uri=tracking_uri)
         e = client.get_experiment_by_name(experiment_name)
@@ -41,14 +42,20 @@ def _train(rank: int, port: str, config):
                               run_name=os.environ['MLFLOW_RUN_NAME'])
         r_id = r.info.run_id
         client.log_dict(r_id, config, 'config.json')
-        client.log_param(r_id, 'Title', os.environ['MLFLOW_RUN_TITLE'])
+        # client.log_param(r_id, 'Title', os.environ['MLFLOW_RUN_TITLE'])
 
     config = namedtuple('Config', config.keys())(**config)
-    # data = namedtuple('Data', data.keys())(**data)
-
     optimizer = load_distributed_optimizer(config, rank)
+    log_ticks = np.linspace(0, config.n_iters-1, 50, endpoint=True).round().astype(int)
     for i in range(config.n_iters):
-        if verbose and rank == 0 and i % 10 == 0:
+        if verbose and rank == 0 and i in log_ticks:
+            metrics = optimizer.metrics()
+            for key in metrics.keys():
+                client.log_metric(r_id, key,
+                                  metrics[key],
+                                  # timestamp=0.,
+                                  step=optimizer.i)
+
             metrics = optimizer.problem.metrics()
             for key in metrics.keys():
                 client.log_metric(r_id, key,

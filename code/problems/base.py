@@ -19,9 +19,9 @@ class _ProblemBase(ABC):
         self.size = config.n_peers
 
         if rank is None:
-            torch.manual_seed(0)
+            torch.manual_seed(config.seed)
         else:
-            torch.manual_seed(rank)
+            torch.manual_seed(config.seed + rank)
 
         if rank == self.master_node:
             self.metrics_dict = defaultdict(float)
