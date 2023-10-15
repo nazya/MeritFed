@@ -9,17 +9,9 @@ from mlflow import MlflowClient
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from code.optimizers.base import Optimizer
-from code.optimizers.distributed import SGD, SGDMD
+from code.optimizers import load_distributed_optimizer
 # from .train import TrainConfig
 
-
-def load_distributed_optimizer(config, rank):
-    if config.optimizer == Optimizer.SGD:
-        return SGD(config, rank)
-    if config.optimizer == Optimizer.SGDMD:
-        return SGDMD(config, rank)
-    else:
-        raise NotImplementedError()
 
 
 class PortNotAvailableError(Exception):
@@ -27,6 +19,7 @@ class PortNotAvailableError(Exception):
 
 
 def _train(rank: int, port: str, config):
+    mp.set_sharing_strategy("file_system") 
     config = json.loads(config)
     setup(rank, config['n_peers'], port)
 
@@ -46,7 +39,7 @@ def _train(rank: int, port: str, config):
 
     config = namedtuple('Config', config.keys())(**config)
     optimizer = load_distributed_optimizer(config, rank)
-    log_ticks = np.linspace(0, config.n_iters-1, 50, endpoint=True).round().astype(int)
+    log_ticks = np.linspace(0, config.n_iters-1, 100, endpoint=True).round().astype(int)
     for i in range(config.n_iters):
         if verbose and rank == 0 and i in log_ticks:
             metrics = optimizer.metrics()

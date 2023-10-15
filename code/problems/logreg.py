@@ -89,8 +89,8 @@ class Logistic(_ProblemBase):
                     ratio = config.h_ratio
                     n = math.ceil(config.n_samples*(1-ratio))
                     indices[:n] = g_indices[:n]
-        
-        
+
+
         indices = indices[:config.n_samples]
         if len(indices) < config.n_samples:
             print("n_samples set to ", len(indices))

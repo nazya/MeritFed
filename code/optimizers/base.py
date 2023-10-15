@@ -3,12 +3,14 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from code import DictEnum
-from code.problems import load_problem
+# from code.problems import load_problem
+
+from code.problem import Problem
 
 
 class Optimizer(DictEnum):
     SGD = auto()
-    SGDMD = auto()
+    MeritFed = auto()
 
 
 class _OptimizerBase(ABC):
@@ -20,7 +22,8 @@ class _OptimizerBase(ABC):
         self.lr = config.lr
         self.n_peers = config.n_peers
         self.batch_size = config.batch_size
-        self.problem = load_problem(config, rank)
+        # self.problem = load_problem(config, rank)
+        self.problem = Problem(config, rank)
 
         if rank == self.master_node:
             self.metrics_dict = defaultdict(float)
