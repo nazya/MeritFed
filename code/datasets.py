@@ -93,7 +93,7 @@ class MNIST(datasets.MNIST):
         if config.n_peers and not rank and self.download:
             self.download()
 
-        self.n_classes = 8
+        self.n_classes = 4
 
         if train is None or train is False:
             super().__init__(root=root, train=False, transform=transforms.ToTensor(), download=False)
@@ -113,12 +113,12 @@ class MNIST(datasets.MNIST):
         if train is None:
             if rank:
                 raise RuntimeError("Non-master client accessed test dataset")
-            mask = self.targets == 1
-            for i in range(2, self.n_classes+1):
+            mask = self.targets == 0
+            for i in range(1, self.n_classes):
                 mask = torch.logical_or(mask, self.targets == i)
-            self.targets[self.targets == self.n_classes] = 0
+            # self.targets[self.targets == self.n_classes] = 0
             indices = torch.nonzero(mask.squeeze()).squeeze()
-            # indices = indices[:config.n_samples]
+            indices = indices[config.n_samples:]
             self.targets = self.targets[indices]
             self.data = self.data[indices]
             print(len(self.data))
@@ -128,10 +128,10 @@ class MNIST(datasets.MNIST):
         if train is False:
             if rank:
                 raise RuntimeError("Non-master client accessed test dataset")
-            mask = self.targets == 1
-            for i in range(2, self.n_classes+1):
+            mask = self.targets == 0
+            for i in range(1, self.n_classes):
                 mask = torch.logical_or(mask, self.targets == i)
-            self.targets[self.targets == self.n_classes] = 0
+            # self.targets[self.targets == self.n_classes] = 0
             indices = torch.nonzero(mask.squeeze()).squeeze()
             indices = indices[:config.n_samples]
             self.targets = self.targets[indices]
@@ -152,16 +152,16 @@ class MNIST(datasets.MNIST):
         #     mask = torch.logical_or(mask, self.targets == i)
         #     more_indices = torch.cat((more_indices, torch.nonzero(mask.squeeze()).squeeze()), 0)
 
-        mask = self.targets == 1
-        for i in range(2, self.n_classes):
+        mask = self.targets == 0
+        for i in range(1, self.n_classes):
             mask = torch.logical_or(mask, self.targets == i)
-        
         indices = torch.nonzero(mask.squeeze()).squeeze()
-        # print('skldjfklasjdf', len(indices))
+
         if rank < target_rank_below:
-            n = config.n_samples - config.n_samples//self.n_classes
+            n = config.n_samples
             if target_rank_below*n > len(indices):
                 raise ValueError('target_rank_below*n_samples too big')
+            
             per_worker = n
             beg = rank * per_worker
             end = beg + per_worker
@@ -171,95 +171,71 @@ class MNIST(datasets.MNIST):
                 print('actual1', end)
             indices = indices[beg:end]
 
-            mask = self.targets == self.n_classes
-            more_indices = torch.nonzero(mask.squeeze()).squeeze()
-            per_worker = config.n_samples - n
-            beg = (rank) * per_worker
-            end = beg + per_worker
-            if end > len(more_indices) - 1:
-                raise ValueError('invalid rounding')
-            if rank == target_rank_below - 1:
-                print('actual2', end)
-            self.targets[more_indices[beg:end]] *= 0
-            indices = torch.cat((indices, more_indices[beg:end]), 0)
-
         elif target_rank_below <= rank and rank < near_target_rank_below:
-            n = config.n_samples - config.n_samples//self.n_classes # n1
+            n = target_rank_below*config.n_samples
             if rank == target_rank_below:
-                print('calc1', target_rank_below*n)
-            indices = indices[target_rank_below*n:]
-            per_worker = n
+                print('calc1', n)
+            indices = indices[n:]
+            per_worker = int(target_ratio*config.n_samples)  # n1
             beg = (rank-target_rank_below) * per_worker
             end = beg + per_worker
             if end > len(indices) - 1:
                 raise ValueError('invalid partitioning')
             indices = indices[beg:end]
 
-            # add different
-            mask = self.targets == self.n_classes
-            more_indices = torch.nonzero(mask.squeeze()).squeeze()
-            n = (config.n_samples - n)*target_rank_below
-            if rank == target_rank_below:
-                print('calc2', n)
-            more_indices = more_indices[n:]
-            per_worker = int((target_ratio)*config.n_samples//self.n_classes) # n2
-            beg = (rank-target_rank_below) * per_worker
-            end = beg + per_worker
-            if end > len(more_indices) - 1:
-                raise ValueError('invalid rounding')
-            self.targets[more_indices[beg:end]] *= 0
-            indices = torch.cat((indices, more_indices[beg:end]), 0)
-
             # add others
-            mask = self.targets == 0
+            mask = self.targets > len(self.classes)  # False mask
+            for i in range(self.n_classes):
+                m = self.targets == i + self.n_classes
+                self.targets[m] = i
+                mask = torch.logical_or(mask, m)
             more_indices = torch.nonzero(mask.squeeze()).squeeze()
-            for i in range(self.n_classes+1, len(self.classes)):
-                mask = torch.logical_or(mask, self.targets == i)
-                more_indices = torch.cat((more_indices, torch.nonzero(mask.squeeze()).squeeze()), 0)
-            per_worker = config.n_samples - len(indices)
-            if per_worker < 0:
-                raise ValueError('too low ratio')
+                
+            per_worker = config.n_samples - int(target_ratio*config.n_samples)
             beg = (rank-target_rank_below) * per_worker
             end = beg + per_worker
             if rank == near_target_rank_below - 1:
                 print('actual3', end)
             if end > len(more_indices) - 1:
                 raise ValueError('invalid rounding')
-            self.targets[more_indices[beg:end]] *= 0
+            # self.targets[more_indices[beg:end]] = 0
             indices = torch.cat((indices, more_indices[beg:end]), 0)
 
-        # per_worker = config.n_samples - per_worker
-            # beg = (rank-target_rank_below) * per_worker
-            # end = beg + per_worker
-            # if end > len(more_indices) - 1:
-            #     raise ValueError('invalid rounding')
-            # # more_indices = more_indices[beg:end]
-            # self.targets[more_indices[beg:end]] *= 0
-            # # self.targets[more_indices] += 1
-            # indices = torch.cat((indices, more_indices[beg:end]), 0)
-            # # self.targets[indices] += 1
         else:
             mask = self.targets == 0
-            more_indices = torch.nonzero(mask.squeeze()).squeeze()
-            for i in range(self.n_classes+1, len(self.classes)):
-                mask = torch.logical_or(mask, self.targets == i)
-                more_indices = torch.cat((more_indices, torch.nonzero(mask.squeeze()).squeeze()), 0)
-
-            n = target_rank_below*(n1)
-            n = (config.n_samples - n2 - n)*(near_target_rank_below-target_rank_below)
-
+            if 2*self.n_classes+1 > len(self.classes):
+                raise ValueError('too many classes')
+            for i in range(self.n_classes):
+                if i + 2*self.n_classes > len(self.classes):
+                    break
+                m = self.targets == i + 2*self.n_classes
+                self.targets[m] = i
+                mask = torch.logical_or(mask, m)
+            indices = torch.nonzero(mask.squeeze()).squeeze()
+            
+            
+            n = config.n_samples - int(target_ratio*config.n_samples)
+            n *= (near_target_rank_below-target_rank_below)
             if rank == near_target_rank_below:
                 print('calc3', n)
+            mask = self.targets > len(self.classes)  # False mask
+            for i in range(self.n_classes):
+                m = self.targets == i + self.n_classes
+                self.targets[m] = i
+                mask = torch.logical_or(mask, m)
+            more_indices = torch.nonzero(mask.squeeze()).squeeze()
             more_indices = more_indices[n:]
-            # mask = self.targets > self.n_classes
-            # indices = torch.nonzero(mask.squeeze()).squeeze()
+            
+            indices = torch.cat((indices, more_indices), 0)
+            
             per_worker = config.n_samples
             beg = (rank-target_rank_below) * per_worker
-            end = min(beg + per_worker, len(more_indices) - 1)
-            if end > len(more_indices) - 1:
+            end = min(beg + per_worker, len(indices) - 1)
+            if end > len(indices) - 1:
                 raise ValueError('invalid partitioning')
-            indices = more_indices[beg:end]
-            self.targets[indices] *= 0
+            indices = indices[beg:end]
+            
+            
 
         self.targets = self.targets[indices]
         self.data = self.data[indices]
