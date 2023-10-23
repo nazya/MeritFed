@@ -38,7 +38,7 @@ def _train(rank: int, port: str, config):
 
     config = namedtuple('Config', config.keys())(**config)
     optimizer = load_distributed_optimizer(config, rank)
-    log_ticks = np.linspace(0, config.n_iters-1, 100, endpoint=True).round().astype(int)
+    log_ticks = np.linspace(0, config.n_iters-1, 50, endpoint=True).round().astype(int)
     for i in range(config.n_iters):
         if verbose and rank == 0 and i in log_ticks:
             metrics = optimizer.metrics()

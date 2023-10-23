@@ -66,7 +66,6 @@ class Normal(data.Dataset):
             dist = MultivariateNormal(mean, std)
             self.dset = dist.sample((self.n_samples,))
         # print(self.mean())
-    
 
     def __len__(self):
         return self.n_samples
@@ -104,9 +103,9 @@ class MNIST(datasets.MNIST):
             raise RuntimeError("Dataset not found. You can use download=True to download it")
 
         self.data, self.targets = self._load_data()
-        self.targets = self.targets.reshape((len(self.targets), 1)).long()
-        self.data = self.data.reshape((len(self.data), -1)) / 255.
-        self.output_dim = self.n_classes+1
+        # self.targets = self.targets.reshape((len(self.targets), 1)).long()
+        # self.data = self.data.reshape((len(self.data), -1)) / 255.
+        self.output_dim = self.n_classes
         # self.output_dim = len(self.classes)
         self.input_dim = len(self.data[0].view(-1))
 
@@ -202,7 +201,7 @@ class MNIST(datasets.MNIST):
             indices = torch.cat((indices, more_indices[beg:end]), 0)
 
         else:
-            mask = self.targets == 0
+            mask = self.targets > len(self.classes)
             if 2*self.n_classes+1 > len(self.classes):
                 raise ValueError('too many classes')
             for i in range(self.n_classes):
@@ -226,7 +225,8 @@ class MNIST(datasets.MNIST):
             more_indices = torch.nonzero(mask.squeeze()).squeeze()
             more_indices = more_indices[n:]
             
-            indices = torch.cat((indices, more_indices), 0)
+            # indices = torch.cat((indices, more_indices), 0)
+            indices = torch.cat((more_indices, indices), 0)
             
             per_worker = config.n_samples
             beg = (rank-target_rank_below) * per_worker
@@ -234,17 +234,22 @@ class MNIST(datasets.MNIST):
             if end > len(indices) - 1:
                 raise ValueError('invalid partitioning')
             indices = indices[beg:end]
-            
-            
 
+        
         self.targets = self.targets[indices]
         self.data = self.data[indices]
         if len(self.targets) != config.n_samples:
             raise ValueError(f'config failed {len(self.targets)} mismatch {config.n_samples}')
+        # s = set()
+        # for i in self.targets:
+        #     s.add(i.item())
+        # print(rank, s)
 
-    def __getitem__(self, index):
-        img, target = self.data[index], self.targets[index]  # .float()
-        return img, target.squeeze()
+
+    # def __getitem__(self, index):
+    #     # print(index)
+    #     img, target = self.data[index], self.targets[index]  # .float()
+    #     return img, target.squeeze()
 
     def model_args(self):
         return self.input_dim, self.output_dim

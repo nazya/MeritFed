@@ -21,6 +21,7 @@ def load_loss(config):
     if config.loss == Loss.MSE:
         return torch.nn.MSELoss(reduction='mean')
     if config.loss == Loss.CrossEntropy:
+        # return torch.nn.NLLLoss()
         return torch.nn.CrossEntropyLoss()
     else:
         raise ValueError()
@@ -44,55 +45,77 @@ class _ProblemBase(ABC):
     def metrics(self):
         pass
 
+def accuracy(output, target, topk=(1,)):
+    """Computes the accuracy over the k top predictions for the specified values of k"""
+    with torch.no_grad():
+        maxk = max(topk)
+        batch_size = target.size(0)
+
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+        res = []
+        for k in topk:
+            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+            res.append(correct_k.mul_(100.0 / batch_size))
+        return res
 
 class Problem(_ProblemBase):
     def __init__(self, config, rank):
         super().__init__(config, rank)
         self.config = config
         self.criterion = load_loss(config)
+        # self.criterion = load_loss(config)
+        #  torch.nn.NLLLoss()
         
         self.rank = rank
         if rank == 0:
             test_dataset = load_dataset(config, rank, train=False)
-            test_sampler = torch.utils.data.sampler.BatchSampler(
-                torch.utils.data.sampler.RandomSampler(test_dataset),
-                batch_size=config.batch_size,
-                drop_last=False)
-            self.test_loader = DataLoader(test_dataset, sampler=test_sampler, batch_size=None, num_workers=0)
-
-            test_sampler_full = torch.utils.data.sampler.BatchSampler(
-                torch.utils.data.sampler.RandomSampler(test_dataset),
-                batch_size=len(test_dataset),
-                drop_last=False)
-
-            test_loader_full = DataLoader(test_dataset, sampler=test_sampler_full, batch_size=None, num_workers=0)
+            # test_sampler = torch.utils.data.sampler.BatchSampler(
+            #     torch.utils.data.sampler.RandomSampler(test_dataset),
+            #     batch_size=config.batch_size,
+            #     drop_last=False)
+            # self.test_loader = DataLoader(test_dataset, sampler=test_sampler, batch_size=None, num_workers=0)
+            self.test_loader = DataLoader(test_dataset, batch_size=config.batch_size, num_workers=0)
+            
+            # test_sampler_full = torch.utils.data.sampler.BatchSampler(
+            #     torch.utils.data.sampler.RandomSampler(test_dataset),
+            #     batch_size=len(test_dataset),
+            #     drop_last=False)
+            # test_loader_full = DataLoader(test_dataset, sampler=test_sampler_full, batch_size=None, num_workers=0)
+            test_loader_full = DataLoader(test_dataset, batch_size=config.batch_size, num_workers=0)
 
             self.test_full_batch = next(iter(test_loader_full))
             self.loss_star = 0.  # test_dataset.loss_star(self.test_full_batch, self.criterion)
 
             test = load_dataset(config, rank, train=None)
-            test_full = torch.utils.data.sampler.BatchSampler(
-                    torch.utils.data.sampler.RandomSampler(test),
-                    batch_size=len(test),
-                    drop_last=False)
-            test_full = DataLoader(test, sampler=test_full, batch_size=None, num_workers=0)
+            # test_full = torch.utils.data.sampler.BatchSampler(
+            #         torch.utils.data.sampler.RandomSampler(test),
+            #         batch_size=len(test),
+            #         drop_last=False)
+            # test_full = DataLoader(test, sampler=test_full, batch_size=None, num_workers=0)
+            test_full = DataLoader(test, batch_size=config.batch_size, num_workers=0)
             self.full_test = next(iter(test_full))
             print('full test len ', len(self.full_test[0]))
 
         dataset = load_dataset(config, rank)
-        self.accuracy = Accuracy(task="multiclass", num_classes=dataset.n_classes+1, top_k=1)
+        self.accuracy = Accuracy(task="multiclass", num_classes=dataset.n_classes, top_k=1)
+
         self.dataset = dataset
-        sampler = torch.utils.data.sampler.BatchSampler(
-                torch.utils.data.sampler.RandomSampler(dataset),
-                batch_size=config.batch_size,
-                drop_last=False)
-        self.loader = DataLoader(dataset, sampler=sampler, batch_size=None, num_workers=0)
-        self.full_loader = DataLoader(dataset=dataset,
-                                      sampler=torch.utils.data.sampler.BatchSampler(
-                                          torch.utils.data.sampler.RandomSampler(dataset),
-                                          batch_size=config.n_samples, drop_last=False), batch_size=None, num_workers=0)
+        # sampler = torch.utils.data.sampler.BatchSampler(
+        #         torch.utils.data.sampler.RandomSampler(dataset),
+        #         batch_size=config.batch_size,
+        #         drop_last=False)
+        # self.loader = DataLoader(dataset, sampler=sampler, batch_size=None, num_workers=0)
+        self.loader = DataLoader(dataset, batch_size=config.batch_size, num_workers=0)
+        # self.full_loader = DataLoader(dataset=dataset,
+        #                               sampler=torch.utils.data.sampler.BatchSampler(
+        #                                   torch.utils.data.sampler.RandomSampler(dataset),
+        #                                   batch_size=config.n_samples, drop_last=False), batch_size=None, num_workers=0)
+        self.full_loader = DataLoader(dataset=dataset, batch_size=config.n_samples, num_workers=0)
         self.full_batch = next(iter(self.full_loader))
-        
+
         self.model = load_model(config, dataset.model_args())
 
     def sample(self, full=False):
@@ -131,7 +154,7 @@ class Problem(_ProblemBase):
         for p in self.model.parameters():
             # print('grad s ', p.grad.shape)
             grads.append(p.grad.detach())
-        return torch.stack(grads, 0)
+        # return torch.stack(grads, 0)
         return grads
 
     def metrics(self) -> float:
@@ -141,9 +164,11 @@ class Problem(_ProblemBase):
         self.batch = self.full_test
         self.metrics_dict["loss-full"] = self.loss().item() - self.loss_star
         if self.accuracy is not None:
+        # if True:
             inputs = self.batch[0]
             outputs = self.model(inputs)
             self.metrics_dict["accuracy"] = self.accuracy(outputs, self.batch[1])
+            # self.metrics_dict["accuracy"] = accuracy(outputs, self.batch[1], 1)
         # x = list()
         # for p in self.model.parameters():
         #     x.append(p.data)
