@@ -21,7 +21,6 @@ def load_loss(config):
     if config.loss == Loss.MSE:
         return torch.nn.MSELoss(reduction='mean')
     if config.loss == Loss.CrossEntropy:
-        # return torch.nn.NLLLoss()
         return torch.nn.CrossEntropyLoss()
     else:
         raise ValueError()
@@ -68,7 +67,7 @@ class Problem(_ProblemBase):
         self.criterion = load_loss(config)
         # self.criterion = load_loss(config)
         #  torch.nn.NLLLoss()
-        
+
         self.rank = rank
         if rank == 0:
             test_dataset = load_dataset(config, rank, train=False)
@@ -78,7 +77,7 @@ class Problem(_ProblemBase):
             #     drop_last=False)
             # self.test_loader = DataLoader(test_dataset, sampler=test_sampler, batch_size=None, num_workers=0)
             self.test_loader = DataLoader(test_dataset, batch_size=config.batch_size, num_workers=0)
-            
+
             # test_sampler_full = torch.utils.data.sampler.BatchSampler(
             #     torch.utils.data.sampler.RandomSampler(test_dataset),
             #     batch_size=len(test_dataset),
