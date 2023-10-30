@@ -43,7 +43,7 @@ class Net(torch.nn.Module):
         # x = self.dropout1(x)
         x = torch.flatten(x, 1)
         x = self.fc1(x)
-        x = F.relu(x)
+        # x = F.relu(x)
         # x = self.dropout2(x)
         x = self.fc2(x)
         return x
@@ -61,6 +61,7 @@ class Linear(torch.nn.Module):
 
     def forward(self, x):
         # out = self.linear(x.view(-1, self.input_dim))
+        x = torch.flatten(x, 1)
         out = self.linear(x)
         return out
 

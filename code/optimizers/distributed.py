@@ -136,29 +136,29 @@ class SGD(_OptimizerBase):
     def step(self) -> None:
         self.problem.sample()
         gradients = self.problem.grad()
-        # with torch.no_grad():
+        
+        with torch.no_grad():
+            if self.problem.rank == self.problem.master_node:  # server
+                grads = []
+                for i, g in enumerate(gradients):
+                    p_grads = [torch.empty_like(g) for _ in range(self.n_peers)]
+                    dist.gather(gradients[i], gather_list=p_grads)
+                    grads.append(p_grads)
 
-        if self.problem.rank == self.problem.master_node:  # server
-            grads = []
-            for i, g in enumerate(gradients):
-                p_grads = [torch.empty_like(g) for _ in range(self.n_peers)]
-                dist.gather(gradients[i], gather_list=p_grads)
-                grads.append(p_grads)
+                for i, p in enumerate(self.problem.model.parameters()):
+                    p_grad = 0
+                    for j, g in enumerate(grads[i]):
+                        p_grad += self.weights[j] * g
+                    p.data -= self.lr * p_grad
 
-            for i, p in enumerate(self.problem.model.parameters()):
-                p_grad = 0
-                for j, g in enumerate(grads[i]):
-                    p_grad += self.weights[j] * g
-                p.data -= self.lr * p_grad
+            else:  # node
+                for i, _ in enumerate(gradients):  # nodes
+                    dist.gather(tensor=gradients[i], dst=self.problem.master_node)
 
-        else:  # node
-            for i, _ in enumerate(gradients):  # nodes
-                dist.gather(tensor=gradients[i], dst=self.problem.master_node)
-
-        # broadcast new point
-        for p in self.problem.model.parameters():
-            dist.broadcast(p.data, src=self.problem.master_node)
-        self.i += 1
+            # broadcast new point
+            for p in self.problem.model.parameters():
+                dist.broadcast(p.data, src=self.problem.master_node)
+            self.i += 1
 
     def metrics(self) -> float:
         return self.metrics_dict

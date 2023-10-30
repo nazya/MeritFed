@@ -1,26 +1,28 @@
 import os
 import sys
 import json
-import random
 import numpy as np
 from collections import namedtuple
 # import mlflow
 from mlflow import MlflowClient
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from code.optimizers.base import Optimizer
 from code.optimizers import load_distributed_optimizer
-# from .train import TrainConfig
+import socket
+from contextlib import closing
 
 
-class PortNotAvailableError(Exception):
-    pass
+def find_free_port():
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(('', 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return str(s.getsockname()[1])
 
 
-def _train(rank: int, port: str, config):
-    mp.set_sharing_strategy("file_system") 
+def _train(rank: int, addr: int, port: str, config):
+    # mp.set_sharing_strategy("file_system") 
     config = json.loads(config)
-    setup(rank, config['n_peers'], port)
+    setup(rank, addr, port, config['n_peers'])
 
     verbose = os.environ['MLFLOW_VERBOSE']
     if verbose and rank == 0:
@@ -64,39 +66,30 @@ def _train(rank: int, port: str, config):
     if verbose and rank == 0:
         client.set_terminated(r_id)
     dist.destroy_process_group()
+    print(f"{rank=} destroy complete")
 
 
-def setup(rank: int, size: int, port: str, backend: str = 'gloo'):
-    os.environ['MASTER_ADDR'] = '127.0.1.1'
-    os.environ['MASTER_PORT'] = port
-    try:
-        dist.init_process_group(backend, rank=rank, world_size=size)
-    except:
-        raise PortNotAvailableError
+def setup(rank, master_addr, master_port, world_size, backend='gloo'):
+    # print(f'setting up {rank=} {world_size=} {backend=}')
+
+    # set up the master's ip address so this child process can coordinate
+    os.environ['MASTER_ADDR'] = master_addr
+    os.environ['MASTER_PORT'] = master_port
+    # print(f"{master_addr=} {master_port=}")
+
+    dist.init_process_group(backend, rank=rank, world_size=world_size)
+    # print(f"{rank=} init complete")
+
+    # dist.destroy_process_group()
+    # print(f"{rank=} destroy complete")
 
 
 def train(config):
     nprocs = config.n_peers
-    # config = config.__dict__
     config = json.dumps(config.__dict__)
-    # data = data.__dict__
-    # Tries to allocate a port until a port is available
-    while True:
-        port = str(random.randrange(1030, 49151))
-        print("Trying port %s" % port)
-        try:
-            mp.spawn(_train,
-                     args=(port, config),
-                     # nprocs=config['n_peers'],
-                     # nprocs=config.n_peers,
-                     nprocs=nprocs,
-                     join=True)
-            break
-        except PortNotAvailableError:
-            print("Port %s not available" % port)
-        else:
-            raise
 
-
-# if __name__ == "__main__":
-#     train()
+    master_addr = '127.0.0.1'
+    master_port = find_free_port()
+    mp.spawn(_train,
+             args=(master_addr, master_port,config,),
+             nprocs=nprocs)

@@ -14,6 +14,7 @@ from torch.distributions.multivariate_normal import MultivariateNormal
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from PIL import Image
+import time as time
 
 class Dataset(DictEnum):
     Normal = auto()
@@ -89,8 +90,11 @@ class MNIST(datasets.MNIST):
     def __init__(self, config, rank, train=True):
         root = '/tmp'
         self.root = root
-        if config.n_peers and not rank and self.download:
+        if config.n_peers and not rank and self.download and not self._check_exists():
             self.download()
+        
+        while not self._check_exists():
+            time.sleep(3)
 
         self.n_classes = 4
 
@@ -103,8 +107,9 @@ class MNIST(datasets.MNIST):
             raise RuntimeError("Dataset not found. You can use download=True to download it")
 
         self.data, self.targets = self._load_data()
-        # self.targets = self.targets.reshape((len(self.targets), 1)).long()
+        self.targets = self.targets.reshape((len(self.targets), 1)).long()
         # self.data = self.data.reshape((len(self.data), -1)) / 255.
+        self.data = self.data.reshape((len(self.data), 1, 28, 28)) / 255.
         self.output_dim = self.n_classes
         # self.output_dim = len(self.classes)
         self.input_dim = len(self.data[0].view(-1))
@@ -120,8 +125,8 @@ class MNIST(datasets.MNIST):
             indices = indices[config.n_samples:]
             self.targets = self.targets[indices]
             self.data = self.data[indices]
-            print(len(self.data))
-            print('full test len ', len(self.data))
+            # print(len(self.data))
+            # print('full test len ', len(self.data))
             return
 
         if train is False:
@@ -160,7 +165,7 @@ class MNIST(datasets.MNIST):
             n = config.n_samples
             if target_rank_below*n > len(indices):
                 raise ValueError('target_rank_below*n_samples too big')
-            
+
             per_worker = n
             beg = rank * per_worker
             end = beg + per_worker
@@ -189,7 +194,7 @@ class MNIST(datasets.MNIST):
                 self.targets[m] = i
                 mask = torch.logical_or(mask, m)
             more_indices = torch.nonzero(mask.squeeze()).squeeze()
-                
+
             per_worker = config.n_samples - int(target_ratio*config.n_samples)
             beg = (rank-target_rank_below) * per_worker
             end = beg + per_worker
@@ -212,7 +217,6 @@ class MNIST(datasets.MNIST):
                 mask = torch.logical_or(mask, m)
             indices = torch.nonzero(mask.squeeze()).squeeze()
             
-            
             n = config.n_samples - int(target_ratio*config.n_samples)
             n *= (near_target_rank_below-target_rank_below)
             if rank == near_target_rank_below:
@@ -224,10 +228,10 @@ class MNIST(datasets.MNIST):
                 mask = torch.logical_or(mask, m)
             more_indices = torch.nonzero(mask.squeeze()).squeeze()
             more_indices = more_indices[n:]
-            
+
             # indices = torch.cat((indices, more_indices), 0)
             indices = torch.cat((more_indices, indices), 0)
-            
+
             per_worker = config.n_samples
             beg = (rank-target_rank_below) * per_worker
             end = min(beg + per_worker, len(indices) - 1)
@@ -235,7 +239,6 @@ class MNIST(datasets.MNIST):
                 raise ValueError('invalid partitioning')
             indices = indices[beg:end]
 
-        
         self.targets = self.targets[indices]
         self.data = self.data[indices]
         if len(self.targets) != config.n_samples:
@@ -245,18 +248,17 @@ class MNIST(datasets.MNIST):
         #     s.add(i.item())
         # print(rank, s)
 
-
-    # def __getitem__(self, index):
-    #     # print(index)
-    #     img, target = self.data[index], self.targets[index]  # .float()
-    #     return img, target.squeeze()
+    def __getitem__(self, index):
+        # print(index)
+        img, target = self.data[index], self.targets[index]  # .float()
+        return img, target.squeeze()
 
     def model_args(self):
         return self.input_dim, self.output_dim
 
     def loss_star(self, full_batch, criterion):
         return 0.
-        return criterion(full_batch[1].float(), full_batch[1]).data
+        # return criterion(full_batch[1].float(), full_batch[1]).data
 
 
 
