@@ -132,6 +132,7 @@ class SGD(_OptimizerBase):
             self.weights = self.problem.dataset.true_weights
         else:
             self.weights = torch.ones(self.n_peers) / self.n_peers
+        self.weights.to(self.problem.device)
 
     def step(self) -> None:
         self.problem.sample()
@@ -169,7 +170,8 @@ class MeritFed(_OptimizerBase):
         super().__init__(config, rank)
         self.config = config
         self.weights = torch.ones(self.n_peers) / self.n_peers
-
+        self.weights.to(self.problem.device)
+        
     def step(self) -> None:
         self.problem.sample()
         gradients = self.problem.grad()
@@ -187,6 +189,7 @@ class MeritFed(_OptimizerBase):
             self.problem.sample_test(full=self.config.md_full_)
             for t in range(self.config.md_n_iters_):
                 self.problem.model.load_state_dict(parameters_save)
+                self.problem.model.to(self.problem.device)
                 for i, p in enumerate(self.problem.model.parameters()):
                     p_grad = 0
                     for j, g in enumerate(grads[i]):
@@ -195,13 +198,20 @@ class MeritFed(_OptimizerBase):
 
                 gradients = self.problem.grad()
                 grad_weight = torch.zeros_like(self.weights)
+                grad_weight.to(self.problem.device)
                 for j in range(self.n_peers):
                     for i, g in enumerate(gradients):
-                        grad_weight[j] += torch.sum(grads[i][j]*gradients[i])
+                        # print(f"{=}")
+                        grad_weight[j].add(torch.sum(grads[i][j]*gradients[i]))
+                        # grad_weight[j] += torch.dot(grads[i][j], gradients[i])
 
                 step = self.config.md_lr_ * self.lr * grad_weight
-                vec = self.weights * torch.exp(step)
+                step = torch.exp(step)
+                step.to(self.problem.device)
+                self.weights.to(self.problem.device)
+                vec = self.weights * step
                 self.weights = vec / torch.sum(vec)
+                self.weights.to(self.problem.device)
                 # print(self.weights.numpy(), ' ', torch.argmax(self.weights).item())
 
             for i, p in enumerate(self.problem.model.parameters()):
@@ -210,7 +220,7 @@ class MeritFed(_OptimizerBase):
                     p_grad += self.weights[j] * g
                 p.data -= self.lr * p_grad
 
-            self.problem.metrics_dict["best_node"] = torch.argmax(self.weights).item()
+            # self.problem.metrics_dict["best_node"] = torch.argmax(self.weights).item()
 
             # self.problem.model.load_state_dict(parameters_save)
             # for i, p in enumerate(self.problem.model.parameters()):

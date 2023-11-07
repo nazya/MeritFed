@@ -5,11 +5,14 @@ import numpy as np
 from collections import namedtuple
 # import mlflow
 from mlflow import MlflowClient
+from mlflow.entities import ViewType
+import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from code.optimizers import load_distributed_optimizer
 import socket
 from contextlib import closing
+
 
 
 def find_free_port():
@@ -20,7 +23,7 @@ def find_free_port():
 
 
 def _train(rank: int, addr: int, port: str, config):
-    # mp.set_sharing_strategy("file_system") 
+    # mp.set_sharing_strategy("file_system")
     config = json.loads(config)
     setup(rank, addr, port, config['n_peers'])
 
@@ -36,7 +39,12 @@ def _train(rank: int, addr: int, port: str, config):
                               run_name=os.environ['MLFLOW_RUN_NAME'])
         r_id = r.info.run_id
         client.log_dict(r_id, config, 'config.json')
-        # client.log_param(r_id, 'Title', os.environ['MLFLOW_RUN_TITLE'])
+        for key in config.keys():
+            if isinstance(config[key], dict):
+                value = config[key]['name']
+            else:
+                value = config[key]
+            client.log_param(r_id, key, value)
 
     config = namedtuple('Config', config.keys())(**config)
     optimizer = load_distributed_optimizer(config, rank)
@@ -56,8 +64,7 @@ def _train(rank: int, addr: int, port: str, config):
                                   metrics[key],
                                   # timestamp=0.,
                                   step=optimizer.i)
-            # sys.stdout.write(str(optimizer.game.dist())+'\r')
-            # print('----------------------------------------------------------iter end', i)
+
             sys.stdout.write('Iterations left: ' +
                              str(config.n_iters - i - 1) + 9*' ' + '\r')
             sys.stdout.flush()
@@ -66,13 +73,11 @@ def _train(rank: int, addr: int, port: str, config):
     if verbose and rank == 0:
         client.set_terminated(r_id)
     dist.destroy_process_group()
-    print(f"{rank=} destroy complete")
+    # print(f"{rank=} destroy complete")
 
 
 def setup(rank, master_addr, master_port, world_size, backend='gloo'):
     # print(f'setting up {rank=} {world_size=} {backend=}')
-
-    # set up the master's ip address so this child process can coordinate
     os.environ['MASTER_ADDR'] = master_addr
     os.environ['MASTER_PORT'] = master_port
     # print(f"{master_addr=} {master_port=}")
@@ -85,11 +90,38 @@ def setup(rank, master_addr, master_port, world_size, backend='gloo'):
 
 
 def train(config):
+    torch.device('cuda:5')
     nprocs = config.n_peers
-    config = json.dumps(config.__dict__)
+    config = config.__dict__
+
+    check_exist = os.environ['MLFLOW_CHECK_EXIST']
+    if check_exist:
+        tracking_uri = os.path.expanduser('~/mlruns/')
+        experiment_name = os.environ['MLFLOW_EXPERIMENT_NAME']
+        client = MlflowClient(tracking_uri=tracking_uri)
+        e = client.get_experiment_by_name(experiment_name)
+        if e is not None:
+            filter_string = list()
+            for key in config.keys():
+                if isinstance(config[key], dict):
+                    value = config[key]['name']
+                else:
+                    value = config[key]
+                filter_string.append(f'params.{key}="{value}"')
+            filter_string.append('attributes.status="FINISHED"')
+
+            # print(f"{filter_string=}")
+            filter_string = ' and '.join(filter_string)
+            runs = client.search_runs(experiment_ids=[e.experiment_id],
+                                      filter_string=filter_string,
+                                      run_view_type=ViewType.ACTIVE_ONLY)
+            if len(runs):
+                return
+
+    config = json.dumps(config)
 
     master_addr = '127.0.0.1'
     master_port = find_free_port()
     mp.spawn(_train,
-             args=(master_addr, master_port,config,),
+             args=(master_addr, master_port, config,),
              nprocs=nprocs)
