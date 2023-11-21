@@ -3,7 +3,6 @@ from enum import auto
 from code import DictEnum
 from collections import defaultdict
 import torch
-from code.models import load_model
 
 import torch
 import math
@@ -16,18 +15,11 @@ import torchvision.transforms as transforms
 from PIL import Image
 import time as time
 
+
 class Dataset(DictEnum):
     Normal = auto()
     MNIST = auto()
-
-
-def load_dataset(config, rank, train=True):
-    if config.dataset == Dataset.Normal:
-        return Normal(config, rank, train=train)
-    if config.dataset == Dataset.MNIST:
-        return MNIST(config, rank, train=train)
-    else:
-        raise ValueError()
+    CIFAR10 = auto()
 
 
 class Normal(data.Dataset):
@@ -41,11 +33,11 @@ class Normal(data.Dataset):
             self.n_samples *= 1
             mean = 0.0 * torch.ones(dim)
             std = torch.eye(dim)
-            
+
             dist = MultivariateNormal(mean, std)
             self.dset = dist.sample((self.n_samples,))
-            print(self.n_samples, len(self.dset))
-            print(self.dset.mean(0))
+            # print(self.n_samples, len(self.dset))
+            # print(self.dset.mean(0))
         elif train is True:
             target_rank_below = 5
             self.true_weights = torch.zeros(config.n_peers)
@@ -66,7 +58,9 @@ class Normal(data.Dataset):
             std = torch.eye(dim)
             dist = MultivariateNormal(mean, std)
             self.dset = dist.sample((self.n_samples,))
-        # print(self.mean())
+        elif train is None:
+            self.dset = list()
+            self.n_samples = 0
 
     def __len__(self):
         return self.n_samples
@@ -86,13 +80,12 @@ class Normal(data.Dataset):
 
 
 class MNIST(datasets.MNIST):
-# class MNIST(datasets.FashionMNIST):
     def __init__(self, config, rank, train=True):
         root = '/tmp'
         self.root = root
         if config.n_peers and not rank and self.download and not self._check_exists():
             self.download()
-        
+
         while not self._check_exists():
             time.sleep(3)
 
@@ -107,146 +100,122 @@ class MNIST(datasets.MNIST):
             raise RuntimeError("Dataset not found. You can use download=True to download it")
 
         self.data, self.targets = self._load_data()
+
         self.targets = self.targets.reshape((len(self.targets), 1)).long()
-        # self.data = self.data.reshape((len(self.data), -1)) / 255.
         self.data = self.data.reshape((len(self.data), 1, 28, 28)) / 255.
         self.output_dim = self.n_classes
-        # self.output_dim = len(self.classes)
         self.input_dim = len(self.data[0].view(-1))
-
-        if train is None:
-            if rank:
-                raise RuntimeError("Non-master client accessed test dataset")
-            mask = self.targets == 0
-            for i in range(1, self.n_classes):
-                mask = torch.logical_or(mask, self.targets == i)
-            # self.targets[self.targets == self.n_classes] = 0
-            indices = torch.nonzero(mask.squeeze()).squeeze()
-            indices = indices[config.n_samples:]
-            self.targets = self.targets[indices]
-            self.data = self.data[indices]
-            # print(len(self.data))
-            # print('full test len ', len(self.data))
-            return
-
-        if train is False:
-            if rank:
-                raise RuntimeError("Non-master client accessed test dataset")
-            mask = self.targets == 0
-            for i in range(1, self.n_classes):
-                mask = torch.logical_or(mask, self.targets == i)
-            # self.targets[self.targets == self.n_classes] = 0
-            indices = torch.nonzero(mask.squeeze()).squeeze()
-            indices = indices[:config.n_samples]
-            self.targets = self.targets[indices]
-            self.data = self.data[indices]
-            print('test len ', len(self.data))
-            return
-
-        target_rank_below = 1
-        self.true_weights = torch.zeros(config.n_peers)
-        self.true_weights[:target_rank_below] = 1 / target_rank_below
-        near_target_rank_below = 10
-
-        target_ratio = config.h_ratio
-
-        # mask = self.targets == 0
-        # more_indices = torch.nonzero(mask.squeeze()).squeeze()
-        # for i in range(self.n_classes+1, len(self.classes)):
-        #     mask = torch.logical_or(mask, self.targets == i)
-        #     more_indices = torch.cat((more_indices, torch.nonzero(mask.squeeze()).squeeze()), 0)
 
         mask = self.targets == 0
         for i in range(1, self.n_classes):
             mask = torch.logical_or(mask, self.targets == i)
         indices = torch.nonzero(mask.squeeze()).squeeze()
 
-        if rank < target_rank_below:
-            n = config.n_samples
-            if target_rank_below*n > len(indices):
-                raise ValueError('target_rank_below*n_samples too big')
+        if train is None:
+            if rank:
+                raise RuntimeError("Non-master client accessed test dataset")
 
-            per_worker = n
-            beg = rank * per_worker
-            end = beg + per_worker
-            if end > len(indices) - 1:
-                raise ValueError('invalid partitioning')
-            if rank == target_rank_below - 1:
-                print('actual1', end)
-            indices = indices[beg:end]
+            indices = torch.nonzero(mask.squeeze()).squeeze()
+            indices = indices[config.n_samples:]
+            # print(len(self.data))
+            # print('full test len ', len(self.data))
 
-        elif target_rank_below <= rank and rank < near_target_rank_below:
-            n = target_rank_below*config.n_samples
-            if rank == target_rank_below:
-                print('calc1', n)
-            indices = indices[n:]
-            per_worker = int(target_ratio*config.n_samples)  # n1
-            beg = (rank-target_rank_below) * per_worker
-            end = beg + per_worker
-            if end > len(indices) - 1:
-                raise ValueError('invalid partitioning')
-            indices = indices[beg:end]
-
-            # add others
-            mask = self.targets > len(self.classes)  # False mask
-            for i in range(self.n_classes):
-                m = self.targets == i + self.n_classes
-                self.targets[m] = i
-                mask = torch.logical_or(mask, m)
-            more_indices = torch.nonzero(mask.squeeze()).squeeze()
-
-            per_worker = config.n_samples - int(target_ratio*config.n_samples)
-            beg = (rank-target_rank_below) * per_worker
-            end = beg + per_worker
-            if rank == near_target_rank_below - 1:
-                print('actual3', end)
-            if end > len(more_indices) - 1:
-                raise ValueError('invalid rounding')
-            # self.targets[more_indices[beg:end]] = 0
-            indices = torch.cat((indices, more_indices[beg:end]), 0)
+        elif train is False:
+            if rank:
+                raise RuntimeError("Non-master client accessed test dataset")
+            indices = torch.nonzero(mask.squeeze()).squeeze()
+            indices = indices[:config.n_samples]
+            # print('test len ', len(self.data))
 
         else:
-            mask = self.targets > len(self.classes)
-            if 2*self.n_classes+1 > len(self.classes):
-                raise ValueError('too many classes')
-            for i in range(self.n_classes):
-                if i + 2*self.n_classes > len(self.classes):
-                    break
-                m = self.targets == i + 2*self.n_classes
-                self.targets[m] = i
-                mask = torch.logical_or(mask, m)
-            indices = torch.nonzero(mask.squeeze()).squeeze()
-            
-            n = config.n_samples - int(target_ratio*config.n_samples)
-            n *= (near_target_rank_below-target_rank_below)
-            if rank == near_target_rank_below:
-                print('calc3', n)
-            mask = self.targets > len(self.classes)  # False mask
-            for i in range(self.n_classes):
-                m = self.targets == i + self.n_classes
-                self.targets[m] = i
-                mask = torch.logical_or(mask, m)
-            more_indices = torch.nonzero(mask.squeeze()).squeeze()
-            more_indices = more_indices[n:]
+            target_rank_below = 1
+            self.true_weights = torch.zeros(config.n_peers)
+            self.true_weights[:target_rank_below] = 1 / target_rank_below
+            near_target_rank_below = 11
 
-            # indices = torch.cat((indices, more_indices), 0)
-            indices = torch.cat((more_indices, indices), 0)
+            target_ratio = config.h_ratio
+            if target_ratio is None:
+                target_ratio = 0.5  # any
 
-            per_worker = config.n_samples
-            beg = (rank-target_rank_below) * per_worker
-            end = min(beg + per_worker, len(indices) - 1)
-            if end > len(indices) - 1:
-                raise ValueError('invalid partitioning')
-            indices = indices[beg:end]
+            if rank < target_rank_below:
+                n = config.n_samples
+                if target_rank_below*n > len(indices):
+                    raise ValueError('target_rank_below*n_samples too big')
+
+                per_worker = n
+                beg = rank * per_worker
+                end = beg + per_worker
+                if end > len(indices) - 1:
+                    raise ValueError('invalid partitioning')
+                # if rank == target_rank_below - 1:
+                #     print('actual1', end)
+                #     print(f"{indices[end]=}")
+                indices = indices[beg:end]
+
+            elif target_rank_below <= rank and rank < near_target_rank_below:
+                n = target_rank_below*config.n_samples
+                if rank == target_rank_below:
+                    print('calc1', n)
+                indices = indices[n:]
+                per_worker = int(target_ratio*config.n_samples)  # n1
+                beg = (rank-target_rank_below) * per_worker
+                end = beg + per_worker
+                if end > len(indices) - 1:
+                    raise ValueError('invalid partitioning')
+                indices = indices[beg:end]
+
+                # add others
+                mask = self.targets > len(self.classes)  # False mask
+                for i in range(self.n_classes):
+                    m = self.targets == i + self.n_classes
+                    self.targets[m] = i
+                    mask = torch.logical_or(mask, m)
+                more_indices = torch.nonzero(mask.squeeze()).squeeze()
+
+                per_worker = config.n_samples - int(target_ratio*config.n_samples)
+                beg = (rank-target_rank_below) * per_worker
+                end = beg + per_worker
+                if rank == near_target_rank_below - 1:
+                    print('actual3', end)
+                if end > len(more_indices) - 1:
+                    raise ValueError('invalid rounding')
+                # self.targets[more_indices[beg:end]] = 0
+                indices = torch.cat((indices, more_indices[beg:end]), 0)
+
+            else:
+                mask = self.targets > len(self.classes)
+                if 2*self.n_classes+1 > len(self.classes):
+                    raise ValueError('too many classes')
+                for i in range(self.n_classes):
+                    if i + 2*self.n_classes > len(self.classes):
+                        break
+                    m = self.targets == i + 2*self.n_classes
+                    self.targets[m] = i
+                    mask = torch.logical_or(mask, m)
+                indices = torch.nonzero(mask.squeeze()).squeeze()
+
+                n = config.n_samples - int(target_ratio*config.n_samples)
+                n *= (near_target_rank_below-target_rank_below)
+                if rank == near_target_rank_below:
+                    print('calc3', n)
+                mask = self.targets > len(self.classes)  # False mask
+                for i in range(self.n_classes):
+                    m = self.targets == i + self.n_classes
+                    self.targets[m] = i
+                    mask = torch.logical_or(mask, m)
+                more_indices = torch.nonzero(mask.squeeze()).squeeze()
+                more_indices = more_indices[n:]
+                indices = torch.cat((more_indices, indices), 0)
+
+                per_worker = config.n_samples
+                beg = (rank-target_rank_below) * per_worker
+                end = min(beg + per_worker, len(indices) - 1)
+                if end > len(indices) - 1:
+                    raise ValueError('invalid partitioning')
+                indices = indices[beg:end]
 
         self.targets = self.targets[indices]
         self.data = self.data[indices]
-        if len(self.targets) != config.n_samples:
-            raise ValueError(f'config failed {len(self.targets)} mismatch {config.n_samples}')
-        # s = set()
-        # for i in self.targets:
-        #     s.add(i.item())
-        # print(rank, s)
 
     def __getitem__(self, index):
         # print(index)
@@ -261,95 +230,166 @@ class MNIST(datasets.MNIST):
         # return criterion(full_batch[1].float(), full_batch[1]).data
 
 
+class CIFAR10(datasets.CIFAR10):
+    def __init__(self, config, rank, train=True):
+        root = '/tmp'
+        self.root = root
+        if config.n_peers and not rank and self.download and not self._check_integrity():
+            self.download()
 
-# class _Normal(data.Dataset):
-#     def __init__(self, config, rank):
-#         dim = 10
-#         self.dim = dim
-#         self.n_samples = config.n_samples
-#         mean = torch.ones(dim) * (rank % 2)
-#         std = torch.eye(dim)
-#         dist = MultivariateNormal(mean, std)
-#         self.dset = dist.sample((self.n_samples,))
-#         # print(self.mean())
+        while not self._check_integrity():
+            time.sleep(3)
 
-#     def __len__(self):
-#         return self.n_samples
+        self.n_classes = 4
 
-#     def __getitem__(self, idx):
-#         return torch.zeros((len(idx), self.dim)), self.dset[idx]
-#         # print(idx)
-#         # idx = torch.IntTensor(idx)
-#         # return torch.zeros(len(idx)), torch.index_select(self.dset[1], 0, idx)
+        if train is None or train is False:
+            super().__init__(root=root, train=False, transform=transforms.ToTensor(), download=False)
+        else:
+            super().__init__(root=root, train=train, transform=transforms.ToTensor(), download=False)
 
-#     def model_args(self):
-#         return (self.dim,)
+        if not self._check_integrity():
+            raise RuntimeError("Dataset not found. You can use download=True to download it")
 
-#     def loss_star(self, full_batch, criterion):
-#         mean = self.dset.mean(dim=0)
-#         return criterion(mean.expand((len(full_batch[0]), *mean.shape)), full_batch[1]).data
+        self.targets = torch.Tensor(self.targets)
+        self.targets = self.targets.reshape((len(self.targets), 1)).long()
 
+        mask = self.targets == 0
+        for i in range(1, self.n_classes):
+            mask = torch.logical_or(mask, self.targets == i)
+        indices = torch.nonzero(mask.squeeze()).squeeze()
 
+        if train is None:
+            if rank:
+                raise RuntimeError("Non-master client accessed test dataset")
 
-# class MNIST(datasets.MNIST):
-#     def __init__(self, config, rank):
-#         root = '/tmp'
-#         self.root = root
-#         if config.n_peers and not rank and self.download:
-#             self.download()
+            indices = indices[config.n_samples:]
+            # print(f"{len(indices)=}")
+            # print(len(self.data))
+            # print('full test len ', len(self.data))
 
-#         torch.distributed.barrier()
-#         super().__init__(root=root, train=True, transform=transforms.ToTensor(), download=False)
+        elif train is False:
+            if rank:
+                raise RuntimeError("Non-master client accessed test dataset")
 
-#         if not self._check_exists():
-#             raise RuntimeError("Dataset not found. You can use download=True to download it")
+            indices = indices[:config.n_samples]
+            # print('test len ', len(self.data))
 
-#         self.data, self.targets = self._load_data() 
-#         target_hratio = 0.1
-#         mask = self.targets == 0
-#         g_indices = torch.nonzero(mask).squeeze()
-#         # if rank == 0:
-            
+        else:
+            target_rank_below = 1
+            self.true_weights = torch.zeros(config.n_peers)
+            self.true_weights[:target_rank_below] = 1 / target_rank_below
+            near_target_rank_below = 11
 
-#         # self.output_dim = len(self.classes)
-#         # self.input_dim = len(self.data[0].view(-1))
+            target_ratio = config.h_ratio
+            if config.h_ratio is None:
+                target_ratio = 0.5  # any
 
-#         mask = self.targets != 0
-#         indices = torch.nonzero(mask).squeeze()
-#         per_worker = int(math.ceil(len(indices) / float(config.n_peers)))
+            if rank < target_rank_below:
+                n = config.n_samples
+                if target_rank_below*n > len(indices):
+                    raise ValueError('target_rank_below*n_samples too big')
 
-#         beg = rank * per_worker
-#         end = min(beg + per_worker, len(indices) - 1)
-#         indices = indices[beg:end]
+                per_worker = n
+                beg = rank * per_worker
+                end = beg + per_worker
+                if end > len(indices) - 1:
+                    raise ValueError('invalid partitioning')
+                # if rank == target_rank_below - 1:
+                #     print('actual1', end)
+                #     print(f"{indices[end]=}")
+                indices = indices[beg:end]
 
-#         if rank % self.output_dim == 0:
-#             mask = self.targets == 0
-#             g_indices = torch.nonzero(mask).squeeze()
-#             n_g = int(config.n_peers / self.output_dim + config.n_peers % self.output_dim)
-#             print(n_g)
+            elif target_rank_below <= rank and rank < near_target_rank_below:
+                n = target_rank_below*config.n_samples
+                # if rank == target_rank_below:
+                #     print('calc1', n)
+                indices = indices[n:]
+                per_worker = int(target_ratio*config.n_samples)  # n1
+                beg = (rank-target_rank_below) * per_worker
+                end = beg + per_worker
+                if end > len(indices) - 1:
+                    raise ValueError('invalid partitioning')
+                indices = indices[beg:end]
 
-#             per_worker = int(math.ceil(len(g_indices) / float(n_g)))
-#             for i in range(n_g):
-#                 if i == int(rank / self.output_dim):
-#                     beg = i * per_worker
-#                     end = min(beg + per_worker, len(g_indices) - 1)
-#                     g_indices = g_indices[beg:end]
-#                     # print('skdjf', len(g_indices))
-#                     ratio = config.h_ratio
-#                     n = math.ceil(config.n_samples * (1 - ratio))
-#                     indices[:n] = g_indices[:n]
+                # add others
+                mask = self.targets > len(self.classes)  # False mask
+                for i in range(self.n_classes):
+                    m = self.targets == i + self.n_classes
+                    self.targets[m] = i
+                    mask = torch.logical_or(mask, m)
+                more_indices = torch.nonzero(mask.squeeze()).squeeze()
 
-#         indices = indices[:config.n_samples]
-#         if len(indices) < config.n_samples:
-#             print("n_samples actual: ", len(indices))
+                per_worker = config.n_samples - int(target_ratio*config.n_samples)
+                beg = (rank-target_rank_below) * per_worker
+                end = beg + per_worker
+                # if rank == near_target_rank_below - 1:
+                #     print('actual3', end)
+                if end > len(more_indices) - 1:
+                    raise ValueError('invalid rounding')
+                # self.targets[more_indices[beg:end]] = 0
+                indices = torch.cat((indices, more_indices[beg:end]), 0)
 
-#         mask = torch.zeros_like(mask).scatter_(0, indices, 1)
-#         self.targets = self.targets[mask].float()
-#         self.data = self.data[mask]
-#         print('rank: ', rank, ' targets ', sum(self.targets == 0))
+            else:
+                mask = self.targets > len(self.classes)
+                if 2*self.n_classes+1 > len(self.classes):
+                    raise ValueError('too many classes')
+                for i in range(self.n_classes):
+                    if i + 2*self.n_classes > len(self.classes):
+                        break
+                    m = self.targets == i + 2*self.n_classes
+                    self.targets[m] = i
+                    mask = torch.logical_or(mask, m)
+                indices = torch.nonzero(mask.squeeze()).squeeze()
 
-#     def model_args(self):
-#         return self.input_dim, self.output_dim
-    
-#     def loss_star(self, full_batch, criterion):
-#         return criterion(full_batch[1], full_batch[1]).data
+                n = config.n_samples - int(target_ratio*config.n_samples)
+                n *= (near_target_rank_below-target_rank_below)
+                # if rank == near_target_rank_below:
+                #     print('calc3', n)
+                mask = self.targets > len(self.classes)  # False mask
+                for i in range(self.n_classes):
+                    m = self.targets == i + self.n_classes
+                    self.targets[m] = i
+                    mask = torch.logical_or(mask, m)
+                more_indices = torch.nonzero(mask.squeeze()).squeeze()
+                more_indices = more_indices[n:]
+                indices = torch.cat((more_indices, indices), 0)
+
+                per_worker = config.n_samples
+                beg = (rank-target_rank_below) * per_worker
+                end = min(beg + per_worker, len(indices) - 1)
+                if end > len(indices) - 1:
+                    raise ValueError('invalid partitioning')
+                indices = indices[beg:end]
+
+        data = list()
+        targets = list()
+        self.targets = self.targets[indices]
+        self.data = self.data[indices]
+        for index, _ in enumerate(self.data):
+            img, target = self.data[index], self.targets[index]
+            img = Image.fromarray(img)
+            if self.transform is not None:
+                img = self.transform(img)
+            if self.target_transform is not None:
+                target = self.target_transform(target)
+
+            data.append(img)
+            targets.append(target)
+
+        self.data = torch.stack(data, dim=0)
+
+        # self.targets = torch.tensor(targets)
+        self.output_dim = self.n_classes
+        self.input_dim = len(self.data[0].view(-1))
+
+    def __getitem__(self, index):
+        # print(index)
+        img, target = self.data[index], self.targets[index]  # .float()
+        return img, target.squeeze()
+
+    def model_args(self):
+        return self.input_dim, self.output_dim
+
+    def loss_star(self, full_batch, criterion):
+        return 0.
+        # return criterion(full_batch[1].float(), full_batch[1]).data

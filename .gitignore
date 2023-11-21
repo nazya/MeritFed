@@ -125,3 +125,8 @@ venv.bak/
 dmypy.json
 
 figures/*
+plots_/*
+plots_
+plot.ipynb
+sns-autoplot.ipynb
+

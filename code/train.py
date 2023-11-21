@@ -6,10 +6,9 @@ from collections import namedtuple
 # import mlflow
 from mlflow import MlflowClient
 from mlflow.entities import ViewType
-import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from code.optimizers import load_distributed_optimizer
+import code.optimizers
 import socket
 from contextlib import closing
 
@@ -47,7 +46,8 @@ def _train(rank: int, addr: int, port: str, config):
             client.log_param(r_id, key, value)
 
     config = namedtuple('Config', config.keys())(**config)
-    optimizer = load_distributed_optimizer(config, rank)
+    
+    optimizer = getattr(code.optimizers, config.optimizer['name'])(config, rank)
     log_ticks = np.linspace(0, config.n_iters-1, 50, endpoint=True).round().astype(int)
     for i in range(config.n_iters):
         if verbose and rank == 0 and i in log_ticks:
@@ -90,11 +90,11 @@ def setup(rank, master_addr, master_port, world_size, backend='gloo'):
 
 
 def train(config):
-    torch.device('cuda:5')
     nprocs = config.n_peers
     config = config.__dict__
 
     check_exist = os.environ['MLFLOW_CHECK_EXIST']
+    # print(f"{check_exist=}")
     if check_exist:
         tracking_uri = os.path.expanduser('~/mlruns/')
         experiment_name = os.environ['MLFLOW_EXPERIMENT_NAME']

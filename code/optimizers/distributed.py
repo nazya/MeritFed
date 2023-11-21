@@ -1,18 +1,121 @@
 import torch
-import numpy as np
 import torch.distributed as dist
-from .base import _OptimizerBase, Optimizer
+from .base import _OptimizerBase
 from copy import deepcopy
 
 
+class SGD(_OptimizerBase):
+    def __init__(self, config, rank):
+        super().__init__(config, rank)
+        self.config = config
 
-def load_distributed_optimizer(config, rank):
-    if config.optimizer == Optimizer.SGD:
-        return SGD(config, rank)
-    if config.optimizer == Optimizer.MeritFed:
-        return MeritFed(config, rank)
-    else:
-        raise NotImplementedError()
+        if self.config.true_weights:
+            self.weights = self.problem.dataset.true_weights
+        else:
+            self.weights = torch.ones(self.n_peers) / self.n_peers
+        self.weights.to(self.problem.device)
+
+    def step(self) -> None:
+        self.problem.sample()
+        gradients = self.problem.grad()
+
+        with torch.no_grad():
+            if self.problem.rank == self.problem.master_node:  # server
+                grads = []
+                for i, g in enumerate(gradients):
+                    p_grads = [torch.empty_like(g) for _ in range(self.n_peers)]
+                    dist.gather(gradients[i], gather_list=p_grads)
+                    grads.append(p_grads)
+
+                for i, p in enumerate(self.problem.model.parameters()):
+                    p_grad = 0
+                    for j, g in enumerate(grads[i]):
+                        p_grad += self.weights[j] * g
+                    p.data -= self.lr * p_grad
+
+            else:  # node
+                for i, _ in enumerate(gradients):  # nodes
+                    dist.gather(tensor=gradients[i], dst=self.problem.master_node)
+
+            # broadcast new point
+            for p in self.problem.model.parameters():
+                dist.broadcast(p.data, src=self.problem.master_node)
+            self.i += 1
+
+    @torch.no_grad()
+    def metrics(self) -> float:
+        return self.metrics_dict
+
+
+class MeritFed(_OptimizerBase):
+    def __init__(self, config, rank):
+        super().__init__(config, rank)
+        self.config = config
+        if self.problem.rank == self.problem.master_node:
+            self.weights = torch.ones(self.n_peers) / self.n_peers
+            self.weights = self.weights.to(self.problem.device)
+            # self.grad_weight = torch.zeros_like(self.weights)
+            # self.grad_weight = self.grad_weight.to(self.problem.device)
+
+    def step(self) -> None:
+        self.problem.sample()
+        gradients = self.problem.grad()
+
+        if self.problem.rank == self.problem.master_node:  # server
+            parameters_save = deepcopy(self.problem.model.state_dict())
+            grads = []
+            for i, g in enumerate(gradients):
+                p_grads = [torch.empty_like(g) for _ in range(self.n_peers)]
+                dist.gather(gradients[i], gather_list=p_grads)
+                grads.append(p_grads)
+
+            # mirror_prox
+            self.problem.sample_test(full=self.config.md_full_)
+            for t in range(self.config.md_n_iters_):
+                for i, p in enumerate(self.problem.model.parameters()):
+                    p_grad = 0
+                    for j, g in enumerate(grads[i]):
+                        p_grad += self.weights[j] * g
+                    p.data -= self.lr * p_grad
+
+                if not self.config.md_full_:
+                    self.problem.sample_test(full=False)
+                gradients = self.problem.grad()
+
+                # self.grad_weight.mul(0)
+                self.grad_weight = torch.zeros_like(self.weights, device=self.problem.device)
+                # self.grad_weight = self.grad_weight.to(self.problem.device)
+                for j in range(self.n_peers):
+                    for i, g in enumerate(gradients):
+                        self.grad_weight[j] = self.grad_weight[j].add(torch.sum(grads[i][j]*gradients[i]))
+
+                step = self.config.md_lr_ * self.lr * self.grad_weight
+                step = torch.exp(step)
+                vec = self.weights * step
+                self.weights = vec / torch.sum(vec)
+                self.problem.model.load_state_dict(parameters_save)
+
+            for i, p in enumerate(self.problem.model.parameters()):
+                p_grad = 0
+                for j, g in enumerate(grads[i]):
+                    p_grad += self.weights[j] * g
+                p.data -= self.lr * p_grad
+
+        else:
+            for i, _ in enumerate(gradients):  # nodes
+                dist.gather(tensor=gradients[i], dst=self.problem.master_node)
+
+        # broadcast new point
+        for p in self.problem.model.parameters():
+            dist.broadcast(p.data, src=self.problem.master_node)
+        self.i += 1
+
+    @torch.no_grad()
+    def metrics(self) -> float:
+        for i in range(len(self.weights)):
+            key = 'weights_%s' % (str(i))
+            self.problem.metrics_dict[key] = self.weights[i].item()
+        return self.metrics_dict
 
 
 
@@ -121,124 +224,3 @@ def load_distributed_optimizer(config, rank):
 #             key = 'weights_%s' % (str(i))
 #             self.problem.metrics_dict[key] = self.weights[i].item()
 #         return self.metrics_dict
-
-
-class SGD(_OptimizerBase):
-    def __init__(self, config, rank):
-        super().__init__(config, rank)
-        self.config = config
-
-        if self.config.true_weights:
-            self.weights = self.problem.dataset.true_weights
-        else:
-            self.weights = torch.ones(self.n_peers) / self.n_peers
-        self.weights.to(self.problem.device)
-
-    def step(self) -> None:
-        self.problem.sample()
-        gradients = self.problem.grad()
-        
-        with torch.no_grad():
-            if self.problem.rank == self.problem.master_node:  # server
-                grads = []
-                for i, g in enumerate(gradients):
-                    p_grads = [torch.empty_like(g) for _ in range(self.n_peers)]
-                    dist.gather(gradients[i], gather_list=p_grads)
-                    grads.append(p_grads)
-
-                for i, p in enumerate(self.problem.model.parameters()):
-                    p_grad = 0
-                    for j, g in enumerate(grads[i]):
-                        p_grad += self.weights[j] * g
-                    p.data -= self.lr * p_grad
-
-            else:  # node
-                for i, _ in enumerate(gradients):  # nodes
-                    dist.gather(tensor=gradients[i], dst=self.problem.master_node)
-
-            # broadcast new point
-            for p in self.problem.model.parameters():
-                dist.broadcast(p.data, src=self.problem.master_node)
-            self.i += 1
-
-    def metrics(self) -> float:
-        return self.metrics_dict
-
-
-class MeritFed(_OptimizerBase):
-    def __init__(self, config, rank):
-        super().__init__(config, rank)
-        self.config = config
-        self.weights = torch.ones(self.n_peers) / self.n_peers
-        self.weights.to(self.problem.device)
-        
-    def step(self) -> None:
-        self.problem.sample()
-        gradients = self.problem.grad()
-        # with torch.no_grad():
-
-        if self.problem.rank == self.problem.master_node:  # server
-            parameters_save = deepcopy(self.problem.model.state_dict())
-            grads = []
-            for i, g in enumerate(gradients):
-                p_grads = [torch.empty_like(g) for _ in range(self.n_peers)]
-                dist.gather(gradients[i], gather_list=p_grads)
-                grads.append(p_grads)
-
-            # mirror_prox
-            self.problem.sample_test(full=self.config.md_full_)
-            for t in range(self.config.md_n_iters_):
-                self.problem.model.load_state_dict(parameters_save)
-                self.problem.model.to(self.problem.device)
-                for i, p in enumerate(self.problem.model.parameters()):
-                    p_grad = 0
-                    for j, g in enumerate(grads[i]):
-                        p_grad += self.weights[j] * g
-                    p.data -= self.lr * p_grad
-
-                gradients = self.problem.grad()
-                grad_weight = torch.zeros_like(self.weights)
-                grad_weight.to(self.problem.device)
-                for j in range(self.n_peers):
-                    for i, g in enumerate(gradients):
-                        # print(f"{=}")
-                        grad_weight[j].add(torch.sum(grads[i][j]*gradients[i]))
-                        # grad_weight[j] += torch.dot(grads[i][j], gradients[i])
-
-                step = self.config.md_lr_ * self.lr * grad_weight
-                step = torch.exp(step)
-                step.to(self.problem.device)
-                self.weights.to(self.problem.device)
-                vec = self.weights * step
-                self.weights = vec / torch.sum(vec)
-                self.weights.to(self.problem.device)
-                # print(self.weights.numpy(), ' ', torch.argmax(self.weights).item())
-
-            for i, p in enumerate(self.problem.model.parameters()):
-                p_grad = 0
-                for j, g in enumerate(grads[i]):
-                    p_grad += self.weights[j] * g
-                p.data -= self.lr * p_grad
-
-            # self.problem.metrics_dict["best_node"] = torch.argmax(self.weights).item()
-
-            # self.problem.model.load_state_dict(parameters_save)
-            # for i, p in enumerate(self.problem.model.parameters()):
-            #     p_grad = torch.mean(torch.stack(grads[i]), dim=0)
-            #     p.data -= self.lr * p_grad
-        else:
-            for i, _ in enumerate(gradients):  # nodes
-                dist.gather(tensor=gradients[i], dst=self.problem.master_node)
-
-        # broadcast new point
-        for p in self.problem.model.parameters():
-            dist.broadcast(p.data, src=self.problem.master_node)
-        self.i += 1
-
-    def metrics(self) -> float:
-        for i in range(len(self.weights)):
-            key = 'weights_%s' % (str(i))
-            self.problem.metrics_dict[key] = self.weights[i].item()
-        return self.metrics_dict
-
-

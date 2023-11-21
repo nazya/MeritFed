@@ -22,7 +22,6 @@ class _OptimizerBase(ABC):
         self.lr = config.lr
         self.n_peers = config.n_peers
         self.batch_size = config.batch_size
-        # self.problem = load_problem(config, rank)
         self.problem = Problem(config, rank)
 
         if rank == self.master_node:
