@@ -20,8 +20,8 @@ class _OptimizerBase(ABC):
         self.i = 0
 
         self.lr = config.lr
-        self.n_peers = config.n_peers
-        self.batch_size = config.batch_size
+        self.npeers = config.npeers
+        self.batchsize = config.batchsize
         self.problem = Problem(config, rank)
 
         if rank == self.master_node:

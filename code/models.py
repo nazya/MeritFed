@@ -16,7 +16,7 @@ class Model(DictEnum):
 
 
 class MNISTNet(torch.nn.Module):
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim=None, output_dim=10):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 32, 3, 1)
         self.conv2 = nn.Conv2d(32, 64, 3, 1)
@@ -171,7 +171,7 @@ class ResNet(nn.Module):
         return out
 
 
-def ResNet18(input_dim, output_dim):
+def ResNet18(input_dim=None, output_dim=10):
     return ResNet(BasicBlock, [2, 2, 2, 2], input_dim, output_dim)
 
 

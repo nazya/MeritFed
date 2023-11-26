@@ -16,14 +16,14 @@ from torchmetrics import Accuracy
 
 
 class Loss(DictEnum):
-    MSE = auto()
-    CrossEntropy = auto()
+    MSELoss = auto()
+    CrossEntropyLoss = auto()
 
 
 def load_loss(config):
-    if config.loss == Loss.MSE:
+    if config.loss == Loss.MSELoss:
         return torch.nn.MSELoss(reduction='mean')
-    if config.loss == Loss.CrossEntropy:
+    if config.loss == Loss.CrossEntropyLoss:
         return torch.nn.CrossEntropyLoss()
     else:
         raise ValueError()
@@ -33,7 +33,7 @@ class _ProblemBase(ABC):
     def __init__(self, config, rank) -> None:
         self.master_node = 0
         self.rank = rank
-        self.size = config.n_peers
+        self.size = config.npeers
 
         if rank is None:
             torch.manual_seed(config.seed)
@@ -55,49 +55,27 @@ class Problem(_ProblemBase):
         self.criterion = load_loss(config)
 
         dataset = getattr(code.datasets, config.dataset['name'])(config, rank)
-        # dataset = load_dataset(config, rank)
+        # self.device = torch.device(os.environ["TORCH_DEVICE"])
+        self.device = torch.device('cuda:4')
 
-        self.device = torch.device(os.environ["CUDA_DEVICE"])
-
-        if hasattr(dataset, 'n_classes'):
+        self.accuracy = None
+        if hasattr(dataset, 'classes'):
+            # self.accuracy = Accuracy(task="multiclass", num_classes=len(dataset.classes), top_k=1).to(self.device)
             self.accuracy = Accuracy(task="multiclass", num_classes=dataset.n_classes, top_k=1).to(self.device)
-        else:
-            self.accuracy = None
 
         self.dataset = dataset
-        # sampler = torch.utils.data.sampler.BatchSampler(
-        #         torch.utils.data.sampler.RandomSampler(dataset),
-        #         batch_size=config.batch_size,
-        #         drop_last=False)
-        # self.loader = DataLoader(dataset, sampler=sampler, batch_size=None, num_workers=0)
-        self.loader = DataLoader(dataset, batch_size=config.batch_size, num_workers=0)
-        # self.full_loader = DataLoader(dataset=dataset,
-        #                               sampler=torch.utils.data.sampler.BatchSampler(
-        #                                   torch.utils.data.sampler.RandomSampler(dataset),
-        #                                   batch_size=config.n_samples, drop_last=False), batch_size=None, num_workers=0)
-        self.full_loader = DataLoader(dataset=dataset, batch_size=config.n_samples, num_workers=0)
-        self.full_batch = next(iter(self.full_loader))
-        self.full_batch[0] = self.full_batch[0].to(self.device)
-        self.full_batch[1] = self.full_batch[1].to(self.device)
-
+        self.loader = DataLoader(dataset, batch_size=config.batchsize, num_workers=0)
+        self.iter = iter(self.loader)
         self.model = getattr(code.models, config.model['name'])(*dataset.model_args())
+        # self.model.share_memory()
         self.model.to(self.device)
+        self.model.train()
 
         if rank == 0:
-            # md_test_dataset = load_dataset(config, rank, train=False)
             md_test_dataset = getattr(code.datasets, config.dataset['name'])(config, rank, train=False)
-            # test_sampler = torch.utils.data.sampler.BatchSampler(
-            #     torch.utils.data.sampler.RandomSampler(md_test_dataset),
-            #     batch_size=config.batch_size,
-            #     drop_last=False)
-            # self.md_test_loader = DataLoader(md_test_dataset, sampler=test_sampler, batch_size=None, num_workers=0)
-            self.md_test_loader = DataLoader(md_test_dataset, batch_size=config.batch_size, num_workers=0)
-            # test_sampler_full = torch.utils.data.sampler.BatchSampler(
-            #     torch.utils.data.sampler.RandomSampler(md_test_dataset),
-            #     batch_size=len(md_test_dataset),
-            #     drop_last=False)
-            # md_test_loader_full = DataLoader(md_test_dataset, sampler=test_sampler_full, batch_size=None, num_workers=0)
-            md_test_loader_full = DataLoader(md_test_dataset, batch_size=config.n_samples, num_workers=0)
+            self.md_test_loader = DataLoader(md_test_dataset, batch_size=config.batchsize, num_workers=0)
+            self.md_test_iter = iter(self.md_test_loader)
+            md_test_loader_full = DataLoader(md_test_dataset, batch_size=config.nsamples, num_workers=0)
             self.md_test_full = next(iter(md_test_loader_full))
             self.md_test_full[0] = self.md_test_full[0].to(self.device)
             self.md_test_full[1] = self.md_test_full[1].to(self.device)
@@ -105,16 +83,11 @@ class Problem(_ProblemBase):
             self.loss_star = 0  # md_test_dataset.loss_star(self.md_test_full, self.criterion)
 
         if rank == 0:
-            # test_dataset = load_dataset(config, rank, train=None)
-            test_dataset = getattr(code.datasets, config.dataset['name'])(config, rank, train=None)
+            test_dataset = getattr(code.datasets, config.dataset['name'])(config, rank, train=False)
             if len(test_dataset):
-                # test_full = torch.utils.data.sampler.BatchSampler(
-                #         torch.utils.data.sampler.RandomSampler(test_dataset),
-                #         batch_size=len(test_dataset),
-                #         drop_last=False)
-                # test_full = DataLoader(test_dataset, sampler=test_full, batch_size=None, num_workers=0)
-                test_full = DataLoader(test_dataset, batch_size=len(test_dataset), num_workers=0)
-                self.test_full = next(iter(test_full))
+                self.test_loader = DataLoader(test_dataset, batch_size=config.batchsize, num_workers=0)
+                self.test_loader_full = DataLoader(test_dataset, batch_size=len(test_dataset), num_workers=0)
+                self.test_full = next(iter(self.test_loader_full))
                 self.test_full[0] = self.test_full[0].to(self.device)
                 self.test_full[1] = self.test_full[1].to(self.device)
             else:
@@ -129,7 +102,11 @@ class Problem(_ProblemBase):
         if full:
             self.batch = self.full_batch
         else:
-            self.batch = next(iter(self.loader))
+            try:
+                self.batch = next(self.iter)
+            except StopIteration:
+                self.iter = iter(self.loader)
+                self.batch = next(self.iter)
             self.batch_to_device()
 
     @torch.no_grad()
@@ -137,7 +114,11 @@ class Problem(_ProblemBase):
         if full:
             self.batch = self.md_test_full
         else:
-            self.batch = next(iter(self.md_test_loader))
+            try:
+                self.batch = next(self.md_test_iter)
+            except StopIteration:
+                self.md_test_iter = iter(self.md_test_loader)
+                self.batch = next(self.md_test_iter)
             self.batch_to_device()
 
     @torch.no_grad()
@@ -162,19 +143,29 @@ class Problem(_ProblemBase):
 
     @torch.no_grad()
     def metrics(self) -> float:
-        self.batch = self.full_batch
-        self.metrics_dict["train-loss"] = self.loss().item() - self.loss_star
-        if self.accuracy is not None:
-            inputs = self.batch[0]
-            outputs = self.model(inputs)
-            # outputs.to(self.device)
-            self.metrics_dict["train-accuracy"] = self.accuracy(outputs, self.batch[1])
-        
-        
+        self.model.eval()
+        correct = 0
+        total_loss = 0
+        for data, labels in self.loader:
+            data, labels = data.to(self.device), labels.to(self.device)
+            output = self.model(data)
+            loss = self.criterion(output, labels)
+            total_loss += loss.item()
+
+            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+            correct += pred.eq(labels.view_as(pred)).sum().item()
+        self.metrics_dict["train-loss"] = total_loss / len(self.loader)
+        self.metrics_dict["train-accuracy"] = 100. * correct / len(self.loader.dataset)
+
+        # if self.accuracy is not None:
+        #     inputs = self.batch[0]
+        #     outputs = self.model(inputs)
+        #     # outputs.to(self.device)
+        #     self.metrics_dict["train-accuracy"] = self.accuracy(outputs, self.batch[1])
 
         if self.test_full is not None:
             self.batch = self.test_full
-            # self.batch_to_device()
+            self.batch_to_device()
             self.metrics_dict["test-loss"] = self.loss().item() - self.loss_star
 
             if self.accuracy is not None:
@@ -182,11 +173,44 @@ class Problem(_ProblemBase):
                 outputs = self.model(inputs)
                 # outputs.to(self.device)
                 self.metrics_dict["test-accuracy"] = self.accuracy(outputs, self.batch[1])
-
+ 
         else:
             loss = 0.
             for p in self.model.parameters():
                 loss += torch.norm(p.data)
             self.metrics_dict["expected-loss"] = torch.norm(loss)
+        self.model.train()
+        return self.metrics_dict
 
+#         self.model.eval()
+#         correct = 0
+#         total_loss = 0
+#         for data, labels in self.loader:
+#             data, labels = data.to(self.device), labels.to(self.device)
+#             output = self.model(data)
+#             loss = self.criterion(output, labels)
+#             total_loss += loss.item()
+
+#             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+#             correct += pred.eq(labels.view_as(pred)).sum().item()
+
+#         self.metrics_dict["train-accuracy"] = 100. * correct / len(self.loader.dataset)
+#         self.metrics_dict["train-loss"] = total_loss / len(self.loader)
+
+#         self.model.eval()
+#         correct = 0
+#         total_loss = 0
+#         for data, labels in self.test_loader:
+#             data, labels = data.to(self.device), labels.to(self.device)
+#             output = self.model(data)
+#             loss = self.criterion(output, labels)
+#             total_loss += loss.item()
+
+#             pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+#             correct += pred.eq(labels.view_as(pred)).sum().item()
+
+#         self.metrics_dict["test-accuracy"] = 100. * correct / len(self.test_loader.dataset)
+#         self.metrics_dict["test-loss"] = total_loss / len(self.test_loader)
+
+#         self.model.train()
         return self.metrics_dict

@@ -26,7 +26,7 @@ class Normal(data.Dataset):
     def __init__(self, config, rank, train=True):
         dim = 10
         self.dim = dim
-        self.n_samples = config.n_samples
+        self.n_samples = config.nsamples
         if train is False:
             if rank:
                 raise RuntimeError("Non-master client accessed test dataset")
@@ -40,7 +40,7 @@ class Normal(data.Dataset):
             # print(self.dset.mean(0))
         elif train is True:
             target_rank_below = 5
-            self.true_weights = torch.zeros(config.n_peers)
+            self.true_weights = torch.zeros(config.npeers)
             self.true_weights[:target_rank_below] = 1 / target_rank_below
             if rank < target_rank_below:
                 mean = 0.0 * torch.ones(dim)
@@ -83,7 +83,7 @@ class MNIST(datasets.MNIST):
     def __init__(self, config, rank, train=True):
         root = '/tmp'
         self.root = root
-        if config.n_peers and not rank and self.download and not self._check_exists():
+        if config.npeers and not rank and self.download and not self._check_exists():
             self.download()
 
         while not self._check_exists():
@@ -116,7 +116,7 @@ class MNIST(datasets.MNIST):
                 raise RuntimeError("Non-master client accessed test dataset")
 
             indices = torch.nonzero(mask.squeeze()).squeeze()
-            indices = indices[config.n_samples:]
+            indices = indices[config.nsamples:]
             # print(len(self.data))
             # print('full test len ', len(self.data))
 
@@ -124,21 +124,21 @@ class MNIST(datasets.MNIST):
             if rank:
                 raise RuntimeError("Non-master client accessed test dataset")
             indices = torch.nonzero(mask.squeeze()).squeeze()
-            indices = indices[:config.n_samples]
+            indices = indices[:config.nsamples]
             # print('test len ', len(self.data))
 
         else:
             target_rank_below = 1
-            self.true_weights = torch.zeros(config.n_peers)
+            self.true_weights = torch.zeros(config.npeers)
             self.true_weights[:target_rank_below] = 1 / target_rank_below
             near_target_rank_below = 11
 
-            target_ratio = config.h_ratio
+            target_ratio = config.hratio
             if target_ratio is None:
                 target_ratio = 0.5  # any
 
             if rank < target_rank_below:
-                n = config.n_samples
+                n = config.nsamples
                 if target_rank_below*n > len(indices):
                     raise ValueError('target_rank_below*n_samples too big')
 
@@ -153,11 +153,11 @@ class MNIST(datasets.MNIST):
                 indices = indices[beg:end]
 
             elif target_rank_below <= rank and rank < near_target_rank_below:
-                n = target_rank_below*config.n_samples
+                n = target_rank_below*config.nsamples
                 if rank == target_rank_below:
                     print('calc1', n)
                 indices = indices[n:]
-                per_worker = int(target_ratio*config.n_samples)  # n1
+                per_worker = int(target_ratio*config.nsamples)  # n1
                 beg = (rank-target_rank_below) * per_worker
                 end = beg + per_worker
                 if end > len(indices) - 1:
@@ -172,7 +172,7 @@ class MNIST(datasets.MNIST):
                     mask = torch.logical_or(mask, m)
                 more_indices = torch.nonzero(mask.squeeze()).squeeze()
 
-                per_worker = config.n_samples - int(target_ratio*config.n_samples)
+                per_worker = config.nsamples - int(target_ratio*config.nsamples)
                 beg = (rank-target_rank_below) * per_worker
                 end = beg + per_worker
                 if rank == near_target_rank_below - 1:
@@ -194,7 +194,7 @@ class MNIST(datasets.MNIST):
                     mask = torch.logical_or(mask, m)
                 indices = torch.nonzero(mask.squeeze()).squeeze()
 
-                n = config.n_samples - int(target_ratio*config.n_samples)
+                n = config.nsamples - int(target_ratio*config.nsamples)
                 n *= (near_target_rank_below-target_rank_below)
                 if rank == near_target_rank_below:
                     print('calc3', n)
@@ -207,7 +207,7 @@ class MNIST(datasets.MNIST):
                 more_indices = more_indices[n:]
                 indices = torch.cat((more_indices, indices), 0)
 
-                per_worker = config.n_samples
+                per_worker = config.nsamples
                 beg = (rank-target_rank_below) * per_worker
                 end = min(beg + per_worker, len(indices) - 1)
                 if end > len(indices) - 1:
@@ -230,11 +230,26 @@ class MNIST(datasets.MNIST):
         # return criterion(full_batch[1].float(), full_batch[1]).data
 
 
+# def CIFAR10():
+#     root = '/tmp'
+#     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+#                                      std=[0.229, 0.224, 0.225])
+
+#     transform = transforms.Compose([
+#         transforms.ToTensor(),
+#         normalize,
+#     ])
+
+#     test_dataset = datasets.CIFAR10(root, train=False, transform=transform)
+#     train_dataset = datasets.CIFAR10(root, train=True, download=True, transform=transform)
+
+#     return train_dataset, test_dataset
+
 class CIFAR10(datasets.CIFAR10):
     def __init__(self, config, rank, train=True):
         root = '/tmp'
         self.root = root
-        if config.n_peers and not rank and self.download and not self._check_integrity():
+        if config.npeers and not rank and self.download and not self._check_integrity():
             self.download()
 
         while not self._check_integrity():
@@ -262,7 +277,7 @@ class CIFAR10(datasets.CIFAR10):
             if rank:
                 raise RuntimeError("Non-master client accessed test dataset")
 
-            indices = indices[config.n_samples:]
+            indices = indices[config.nsamples:]
             # print(f"{len(indices)=}")
             # print(len(self.data))
             # print('full test len ', len(self.data))
@@ -271,21 +286,21 @@ class CIFAR10(datasets.CIFAR10):
             if rank:
                 raise RuntimeError("Non-master client accessed test dataset")
 
-            indices = indices[:config.n_samples]
+            indices = indices[:config.nsamples]
             # print('test len ', len(self.data))
 
         else:
             target_rank_below = 1
-            self.true_weights = torch.zeros(config.n_peers)
+            self.true_weights = torch.zeros(config.npeers)
             self.true_weights[:target_rank_below] = 1 / target_rank_below
             near_target_rank_below = 11
 
-            target_ratio = config.h_ratio
-            if config.h_ratio is None:
+            target_ratio = config.hratio
+            if config.hratio is None:
                 target_ratio = 0.5  # any
 
             if rank < target_rank_below:
-                n = config.n_samples
+                n = config.nsamples
                 if target_rank_below*n > len(indices):
                     raise ValueError('target_rank_below*n_samples too big')
 
@@ -300,11 +315,11 @@ class CIFAR10(datasets.CIFAR10):
                 indices = indices[beg:end]
 
             elif target_rank_below <= rank and rank < near_target_rank_below:
-                n = target_rank_below*config.n_samples
+                n = target_rank_below*config.nsamples
                 # if rank == target_rank_below:
                 #     print('calc1', n)
                 indices = indices[n:]
-                per_worker = int(target_ratio*config.n_samples)  # n1
+                per_worker = int(target_ratio*config.nsamples)  # n1
                 beg = (rank-target_rank_below) * per_worker
                 end = beg + per_worker
                 if end > len(indices) - 1:
@@ -319,7 +334,7 @@ class CIFAR10(datasets.CIFAR10):
                     mask = torch.logical_or(mask, m)
                 more_indices = torch.nonzero(mask.squeeze()).squeeze()
 
-                per_worker = config.n_samples - int(target_ratio*config.n_samples)
+                per_worker = config.nsamples - int(target_ratio*config.nsamples)
                 beg = (rank-target_rank_below) * per_worker
                 end = beg + per_worker
                 # if rank == near_target_rank_below - 1:
@@ -341,7 +356,7 @@ class CIFAR10(datasets.CIFAR10):
                     mask = torch.logical_or(mask, m)
                 indices = torch.nonzero(mask.squeeze()).squeeze()
 
-                n = config.n_samples - int(target_ratio*config.n_samples)
+                n = config.nsamples - int(target_ratio*config.nsamples)
                 n *= (near_target_rank_below-target_rank_below)
                 # if rank == near_target_rank_below:
                 #     print('calc3', n)
@@ -354,7 +369,7 @@ class CIFAR10(datasets.CIFAR10):
                 more_indices = more_indices[n:]
                 indices = torch.cat((more_indices, indices), 0)
 
-                per_worker = config.n_samples
+                per_worker = config.nsamples
                 beg = (rank-target_rank_below) * per_worker
                 end = min(beg + per_worker, len(indices) - 1)
                 if end > len(indices) - 1:
@@ -392,4 +407,3 @@ class CIFAR10(datasets.CIFAR10):
 
     def loss_star(self, full_batch, criterion):
         return 0.
-        # return criterion(full_batch[1].float(), full_batch[1]).data
