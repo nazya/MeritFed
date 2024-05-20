@@ -79,7 +79,10 @@ def train(cfg):
     device = torch.device(os.environ["TORCH_DEVICE"])
 
     train_data = getattr(datasets, cfg.dataset['name'])(cfg, train=True)
-    train_split, weights, shapes = split_train(train_data, cfg)
+    if cfg.npeers == 40:
+        train_split, weights, shapes = split_train(train_data, cfg)
+    else:
+        train_split, weights, shapes = split_train(train_data, cfg)
 
     config.update({'weights': weights})
     cfg = argparse.Namespace(**config)
@@ -126,6 +129,8 @@ def train(cfg):
         m.update(optimizer.metrics())
         logger.log_metrics(m, 0)
 
+    if hasattr(optimizer, 'init_losses'):
+        optimizer.init_losses(model, train_loaders, criterion)
     nticks = min(cfg.nepochs, 50)
     # log_ticks = np.linspace(0, cfg.nepochs, nticks, endpoint=True).round().astype(int)
     log_ticks = linspace(0, cfg.nepochs, nticks, endpoint=True).round().astype(int)
@@ -145,7 +150,9 @@ def train(cfg):
                 if hasattr(output, "logits"):
                     output = output.logits
                 loss = criterion(output, batch[-1])
+#                 print(f"{w_id, loss=}")
 
+#                 print(f"")
                 # running_loss += loss.item()
                 if w_id == 0:
                     running_loss += loss.item() * len(batch[-1])
@@ -163,7 +170,11 @@ def train(cfg):
                     if logger.enabled and classes:
                         pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
                         correct += pred.eq(batch[-1].view_as(pred)).sum().item()
+                if hasattr(optimizer, 'before_backward'):
+                    optimizer.before_backward(w_id, model)
                 loss.backward()
+                # if cfg.optimizer['name'] == ''
+                # optimizer.step(w_id, model, train_loaders[w_id], criterion, device)
                 optimizer.step(w_id, model, val_loader, criterion, device)
                 optimizer.zero_grad()
         # train_loss = running_loss/(iter_steps*cfg.npeers)

@@ -10,3 +10,5 @@ class Optimizer(DictEnum):
     MeritFed = auto()
     TAWT = auto()
     FedAdp = auto()
+    FedAvg = auto()
+    FedFomo = auto()
